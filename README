@@ -1,0 +1,23 @@
+*****************************************
+                 README               
+*****************************************
+
+[2020 Spring System Programming] Project1
+
+# Necessary Files to Compile:
+  - 20170364.c
+  - 20170364.h
+  - opcode.txt
+  - Makefile
+
+# How to Compile:
+	type "make"
+	ex) ~/sp20170364_proj1/make 
+	
+# How to Execute:
+	type "./20170364.out"
+	ex) ~/sp20170364_proj1/./20170364.out
+
+*****************************************
+                 README               
+*****************************************
