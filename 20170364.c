@@ -47,11 +47,13 @@ int  mode(){
 			code[i] = code_ptr[i];
 		}
 	}
-	for (i;i<strlen(code);i++) {
+	/*
+	for (i=strlen(code_ptr);i<strlen(code);i++) {		// change address value from lowercase to uppercase
 		if ('a' <= code[i] && code[i] <= 'f') {
 			code[i] = code[i] - UptoLow;
 		}
 	}
+	*/
 
 	if (!(strcmp(code_ptr, "h")) || !(strcmp(code_ptr, "help"))) return 1;
 	else if (!(strcmp(code_ptr, "d")) || !(strcmp(code_ptr, "dir"))) return 2;
@@ -63,6 +65,9 @@ int  mode(){
 	else if (!(strcmp(code_ptr, "reset"))) return 8;
 	else if (!(strcmp(code_ptr, "opcode"))) return 9;
 	else if (!(strcmp(code_ptr, "opcodelist"))) return 10;
+	else if (!(strcmp(code_ptr, "assemble"))) return 11;
+	else if (!(strcmp(code_ptr, "type"))) return 12;
+	else if (!(strcmp(code_ptr, "symbol"))) return 13;
 	else return 0;
 }
 
@@ -192,7 +197,7 @@ int freeLinkedList() {
 [return]	none
 **********/
 void help(){ 
-	printf("h[elp]\nd[ir]\nq[uit]\nhi[story]\ndu[mp] [start, end]\ne[dit] address, value\nf[ill] start, end, value\nreset\nopcode mnemonic\nopcodelist\n");
+	printf("h[elp]\nd[ir]\nq[uit]\nhi[story]\ndu[mp] [start, end]\ne[dit] address, value\nf[ill] start, end, value\nreset\nopcode mnemonic\nopcodelist\nassemble filename\ntype filename\nsymbol\n");
 	
 	return;
 }
@@ -645,6 +650,7 @@ int hashFunc(char* mnemonic) {
 	int hashkey;
 	// make hash key 
 	// it is best to use all 20 storage in hash_table to get higher search speed
+	mnemonic = strtok(mnemonic, "+");
 	hashkey = (mnemonic[0]+(mnemonic[1]+1)*2)%20;	
 	return hashkey;
 }
@@ -811,6 +817,830 @@ int opcodelist() {
 	return 0;
 }
 
+int initInst(inst *newInst) {
+	newInst->lineNum = 0;
+	newInst->loc = -1;
+	newInst->symbol= " ";
+	newInst->mnem = " ";
+	newInst->var1 = " ";
+	newInst->var2 = " ";
+	newInst->objcode = -1;
+	newInst->prev = NULL;
+	newInst->next = NULL;
+	
+	return 0;
+}
+
+int makeInstList() {
+	command *commandptr = findLastCommand();
+	FILE *fp = fopen(commandptr->par1, "r");
+	char line[MAX_LINE];
+	char *ptr;
+	inst *newInst, *prevInst;
+	int start_line = 5;
+
+	if (fp == NULL) {
+		printf("failed to open file!!!\n");
+		return -1;
+	}
+	/* when previous instruction file exists in the linked list */
+	if (instRoot != NULL) {
+		//inst *delLL = instRoot;
+		/*
+		while(delLL != NULL) {
+			free(delLL);
+			delLL = delLL->next;
+		}*/
+		instRoot = NULL; 
+	}
+
+	while(1) {
+		if (fgets(line, sizeof(line), fp) == NULL) break;
+		else {
+			if (line[0] == '\n') continue;
+
+			newInst = (inst*)malloc(sizeof(inst));
+			initInst(newInst);
+			/* case for comments */
+			if (line[0] == '.') { 
+				ptr = strtok(line, "\n");
+				newInst->symbol = (char*)malloc(sizeof(char)*strlen(ptr)+1);
+				strcpy(newInst->symbol, ptr);
+			}
+			/* case for instructions */
+			else {
+				/* case for instruction lines with symbol*/
+				if (line[0] != ' ' && line[0] != '\t') {
+					ptr = strtok(line, "\t ");
+					if (ptr!=NULL) {
+						newInst->symbol = (char*)malloc(sizeof(char)*strlen(ptr)+1);
+						strcpy(newInst->symbol, ptr);
+					}
+
+					ptr = strtok(NULL, "\t \n");	
+					newInst->mnem = (char*)malloc(sizeof(char)*strlen(ptr)+1);
+					strcpy(newInst->mnem, ptr);
+				}
+				/* case for instruction lines without symbol */
+				else {
+					ptr = strtok(line, "\t \n");
+					newInst->mnem = (char*)malloc(sizeof(char)*strlen(ptr)+1);
+					strcpy(newInst->mnem, ptr);
+				}
+				ptr = strtok(NULL, "\t ,\n");
+				if (ptr!=NULL) {
+					newInst->var1 = (char*)malloc(sizeof(char)*strlen(ptr)+1);
+					strcpy(newInst->var1, ptr);
+				}
+					
+				ptr = strtok(NULL, "\t \n");
+				if (ptr!=NULL) {
+					newInst->var2 = (char*)malloc(sizeof(char)*strlen(ptr)+1);
+					strcpy(newInst->var2, ptr);
+				}					
+			
+			}
+			
+			/* calculate line number */
+			newInst->lineNum = start_line;
+			start_line += 5;
+
+			/* save instructions as linked list structure */
+			if (instRoot == NULL) instRoot = newInst;
+			else {
+				prevInst->next = newInst;
+				newInst->prev = prevInst;
+			}
+			prevInst = newInst;
+		}
+	}
+	
+	fclose(fp);
+
+	return 0;
+}
+
+
+int checkMnem(char *mnem) {
+	if (!strcmp(mnem, "WORD") || !strcmp(mnem, "BYTE"))
+		return 1;
+	else if (!strcmp(mnem, "RESW") || !strcmp(mnem, "RESB"))
+		return 2;
+	else {
+		/* error check */
+		mnemonic *tmpm = hash_table[hashFunc(mnem)];
+		char *newm = strtok(mnem, "+");
+		if (tmpm == NULL) return -1;
+		while(strcmp(newm, tmpm->mnem)) {
+			if (tmpm->next == NULL) return -1;
+			tmpm = tmpm->next;
+		}
+		return 3;
+	}
+}
+
+int checkConstSize(char *mnem, char *con) {
+	int onesize, count;
+	if (!strcmp(mnem, "BYTE")) onesize = 1;
+	else if (!strcmp(mnem, "WORD")) onesize = 3;
+	
+	if (con[0] == 'c' || con[0] == 'C') 
+		count = strlen(con) - 3;
+	else if (con[0] == 'x' || con[0] == 'X') {
+		count = strlen(con) - 3;
+		count = (count/2) + (count%2);
+	}
+	else count = 1;
+
+	return onesize*count;
+}
+
+int checkVarSize(char *mnem, char *var) {
+	int onesize, count;
+	if (!strcmp(mnem, "RESB")) onesize = 1;
+	else if (!strcmp(mnem, "RESW")) onesize = 3;
+
+	count = atoi(var);
+	
+	return onesize*count;
+}
+
+// or 'pass1'
+int locSet() {
+	inst *tmpinst = instRoot;
+	int startloc, disp, errflag = 0, finalerror = 0;
+	mnemonic *tmpM;
+	
+	if (tmpinst == NULL) {
+		printf("no assembly instructions!!!\n");
+		return -1;
+	}
+
+	if (!strcmp(tmpinst->mnem, "START")) {
+		startloc = htod(tmpinst->var1); 
+		startaddr = startloc;
+	}
+	else startloc = 0;
+
+	do {
+		errflag = 0;
+		/* case for comments */
+		if (tmpinst->symbol[0] == '.')
+				tmpinst->loc = -1;
+		/* case for assembler directive */
+		else if (!strcmp(tmpinst->mnem, "BASE")) 
+			tmpinst->loc = -1;
+		else if (!strcmp(tmpinst->mnem, "END")) {
+			tmpinst->loc = startloc;
+			endaddr = startloc;
+		}
+		/* case for non-assember directive */
+		else if (!strcmp(tmpinst->mnem, "START")) {
+			tmpinst->loc = startloc;
+		}
+		else {
+			switch(checkMnem(tmpinst->mnem)) {
+				/* case for constant */
+				case 1:
+					disp = checkConstSize(tmpinst->mnem, tmpinst->var1);
+					break;
+				/* case for variable */
+				case 2:
+					disp = checkVarSize(tmpinst->mnem, tmpinst->var1);
+					break;
+				/* case for mnemonic */
+				case 3:
+					/* format 4 */
+					if (tmpinst->mnem[0] == '+')
+						disp = 4;
+					/* format 1,2,3 */
+					else {
+						tmpM = hash_table[hashFunc(tmpinst->mnem)];
+						/* error check */
+						if (tmpM == NULL) {
+							printf("Error in line %d :: mnemonic does not exist\n", tmpinst->lineNum);
+							errflag = finalerror = -1;
+						}
+						else {
+							while(strcmp(tmpM->mnem, tmpinst->mnem)) {
+								if (tmpM->next == NULL) {
+									printf("Error in line %d :: mnemonic does not exist\n", tmpinst->lineNum);
+									errflag = finalerror = -1;
+									break;
+								}
+								tmpM = tmpM->next;
+							}
+						}
+						if (errflag == -1) disp = 0;
+						else disp = tmpM->format;
+					}
+					break;
+				case -1:
+					printf("Error in line %d :: mnemonic does not exist\n", tmpinst->lineNum);
+					errflag = finalerror = -1;
+					disp = 0;
+					break;
+			} 
+			tmpinst->loc = startloc;
+			startloc += disp;
+		}
+		tmpinst = tmpinst->next;
+	} while (tmpinst != NULL);
+	
+	if (finalerror == -1) return -1;
+
+	return 0;
+}
+
+int symHashFunc(char* symbol) {
+	int hashkey;
+	
+	symbol = strtok(symbol, "#@");
+	hashkey = ((int)symbol[0] - ((int)'A')) % 26;
+	return hashkey;
+}
+
+
+int makeSymHash() {
+	inst *tmpinst = instRoot;
+	sym *newsym, *tmps, *x;
+	int hashkey, i, errflag = 0, finalerror = 0;
+	
+	/* initialize symbol_hash */
+	for (i=0;i<26;i++) symbol_hash[i] = NULL;
+
+	while(tmpinst != NULL) {
+		errflag = 0;
+		if (tmpinst->symbol[0] != ' ' && tmpinst->symbol[0] != '.' && strcmp(tmpinst->symbol, "COPY")) {  
+			hashkey = symHashFunc(tmpinst->symbol);
+			tmps = symbol_hash[hashkey];
+			
+			/* error check - symbol already exists */
+			for (x=symbol_hash[hashkey];x!=NULL;x=x->next) {
+				if (!strcmp(x->symbol, tmpinst->symbol)) {
+					printf("Error in line %d :: same symbol already exists\n", tmpinst->lineNum);
+					errflag = finalerror = -1;
+				}
+			}
+			if (errflag == -1) {
+				tmpinst = tmpinst->next;
+				continue;
+			}
+
+			newsym = (sym*)malloc(sizeof(sym));
+			newsym->loc = tmpinst->loc; 
+			newsym->symbol = tmpinst->symbol;
+			newsym->visit = 0;
+			newsym->prev = newsym->next = NULL;
+			
+			/* when hash table is empty */
+			if (tmps == NULL) 
+				symbol_hash[hashkey] = newsym;
+			else {
+				while(tmps->next != NULL) 
+					tmps = tmps->next;
+				tmps->next = newsym;
+				newsym->next = NULL;	
+			}
+
+		}
+
+		tmpinst = tmpinst->next;
+	}
+		
+	if (errflag == -1) return -1;
+
+	return 0;
+}
+
+int findSymLoc(inst* tmpinst) {
+	int errflag = 0, hashkey;
+	char symbol[20];
+	strcpy(symbol, strtok(tmpinst->var1, "#@"));
+	hashkey = symHashFunc(symbol);
+	sym *tmps = symbol_hash[hashkey];
+	
+	if (tmps == NULL) {
+		printf("Error in line %d :: symbol does not exist\n", tmpinst->lineNum);
+		errflag = -1;
+	}
+	else {
+		while(strcmp(tmps->symbol, symbol)) {
+			if (tmps->next == NULL) {
+				printf("Error in line %d :: symbol does not exist\n", tmpinst->lineNum);
+				errflag = -1;
+				tmps = tmps->next;
+				break;
+			}
+			tmps = tmps->next;
+		} 
+	}
+	if (errflag == -1) return -1;
+
+	return tmps->loc;
+}
+
+
+int regnum(char *r) {
+	if (!strcmp(r, "A") || r[0] == ' ') return 0;
+	else if (!strcmp(r, "X")) return 1;
+	else if (!strcmp(r, "L")) return 2;
+	else if (!strcmp(r, "B")) return 3;
+	else if (!strcmp(r, "S")) return 4;
+	else if (!strcmp(r, "T")) return 5;
+	else if (!strcmp(r, "F")) return 6;
+	else if (!strcmp(r, "PC")) return 8;
+	else if (!strcmp(r, "SW")) return 9;
+	
+	return -1;
+}
+	
+
+int getObjCode(inst *tmpinst, int format, int n, int i, int x, int b, int p, int e, int disp, int compflag) {
+	int objcode = 0;
+	int r1, r2;
+	char* normalizemnem = strtok(tmpinst->mnem, "+");
+	mnemonic *tmpM = hash_table[hashFunc(tmpinst->mnem)];
+	
+	while(strcmp(tmpM->mnem, normalizemnem)) tmpM = tmpM->next;
+
+	if (compflag) {
+		/* 2's complement */
+		disp = power(16, format) - disp;
+	}
+
+	switch(format) {
+	case 1:
+		objcode = tmpM->opcode;
+		break;
+	case 2:
+		r1 = regnum(tmpinst->var1);
+		if (tmpinst->var2 != NULL) r2 = regnum(tmpinst->var2);
+		else r2 = 0; 
+		objcode = tmpM->opcode*power(2, 8) + r1*power(16, 1) + r2;
+		break;
+	case 3:
+		objcode = (tmpM->opcode/4)*power(2, 18) + n*power(2, 17) + i*power(2,16) + x*power(2,15) + b*power(2,14) + p*power(2,13) + e*power(2,12) + disp;
+		break;
+	case 4:
+		objcode = (tmpM->opcode/4)*power(2, 26) + n*power(2, 25) + i*power(2,24) + x*power(2,23) + b*power(2,22) + p*power(2,21) + e*power(2,20) + disp;
+		break;
+	}
+
+
+	return objcode;
+}
+
+// or pass2
+int objcodeSet() {
+	inst *tmpinst = instRoot;
+	inst *tmppc;
+	mnemonic *tmpmnem;
+	char *normalizemnem = (char*)malloc(sizeof(char)*30);
+	int n, i, x, b, p, e, disp, format, base, pc, ta, compflag, index;
+	int finalerror = 0;
+	
+	if (tmpinst == NULL) {
+		printf("no assembly instructions!!!\n");
+		return -1;
+	}
+		
+	while (tmpinst != NULL) {
+		compflag = 0;
+		if (!strcmp(tmpinst->mnem, "BASE")) {
+			// don't need to create object code
+			base = findSymLoc(tmpinst);
+			if (base == -1) {
+				finalerror =  -1; 
+				tmpinst = tmpinst->next;
+				continue;
+			}
+			tmpinst->objcode = -1;
+		}
+		else if (!strcmp(tmpinst->mnem, "START") || !strcmp(tmpinst->mnem, "END") || tmpinst->symbol[0] == '.') {
+			// don't need to create object code
+			tmpinst->objcode = -1;
+		}
+		else if (!strcmp(tmpinst->mnem, "RESW") ||
+				!strcmp(tmpinst->mnem, "RESB")) {
+			// don't need to create object code
+			tmpinst->objcode = -1;
+		}
+		else if (!strcmp(tmpinst->mnem, "WORD") || !strcmp(tmpinst->mnem, "BYTE")) {
+			disp = 0;
+			if (tmpinst->var1[0] == 'C') {
+				strcpy(normalizemnem, tmpinst->var1);
+				normalizemnem = strtok(normalizemnem, "C'");
+				// case when length is longer than 4
+				if (checkConstSize(tmpinst->mnem, tmpinst->var1) > 4) {
+					tmpinst->tmpobj = (char*)malloc(sizeof(char)*(checkConstSize(tmpinst->mnem, tmpinst->var1+1)));
+					strcpy(tmpinst->tmpobj,normalizemnem);
+					tmpinst->objcode = 0;
+				}
+				else {
+					for (index = 0;index<strlen(normalizemnem);index++) {
+						disp += (int)(normalizemnem[index])*power(16, 2*( strlen(normalizemnem)-1-index));
+					}
+					tmpinst->objcode = disp;
+				}
+			}
+			else if (tmpinst->var1[0] == 'X') {
+				strcpy(normalizemnem, tmpinst->var1);
+				normalizemnem = strtok(normalizemnem, "X'");
+				tmpinst->objcode = htod(normalizemnem);
+			}
+		}
+		else {
+			tmpmnem = hash_table[hashFunc(tmpinst->mnem)];
+			strcpy(normalizemnem, tmpinst->mnem);
+			normalizemnem = strtok(normalizemnem, "+");
+			while (strcmp(tmpmnem->mnem, normalizemnem)) 
+				tmpmnem = tmpmnem->next;
+
+			/* checking format */
+			if (tmpinst->mnem[0] == '+') {
+				e = 1; format = 4;
+			}
+			else {
+				e = 0; format = tmpmnem->format;
+			}
+
+			/* checking addressing method */
+			if (tmpinst->var1[0] == '#') {
+				n = 0; i = 1;
+			}
+			else if (tmpinst->var1[0] == '@') {
+				n = 1; i = 0;
+			}
+			else {
+				n = 1; i = 1;
+			}
+
+			/* cheking usage of resgister X */
+			if (tmpinst->var1[0] == 'X' || tmpinst->var2[0] == 'X')
+				x = 1;
+			else x = 0;
+
+			/* make Target Address */
+			if (tmpinst->var1[0] == '#' && '0' <= tmpinst->var1[1] && tmpinst->var1[1] <= '9') {
+				b = 0; p = 0;
+				disp = atoi(strtok(tmpinst->var1, "#"));
+			}
+			else if (format == 4) {
+				b = 0; p = 0;
+				disp = findSymLoc(tmpinst);
+				if (disp == -1) {
+					finalerror = -1;
+					tmpinst = tmpinst->next;
+					continue;
+				}
+			}
+			else if (format == 2) {
+				b = 0; p = 0; disp = 0;
+			}
+			else if (tmpinst->var1[0] == ' ') {
+				b = 0; p = 0; disp = 0;
+			}
+			else {
+				tmppc = tmpinst->next;
+				while (tmppc->loc == -1) tmppc = tmppc->next;
+				pc = tmppc->loc;
+				ta = findSymLoc(tmpinst);
+				if (ta == -1) {
+					finalerror = -1; 
+					tmpinst = tmpinst->next;
+					continue;
+				}
+				if (pc > ta) {
+					disp = pc - ta;
+					compflag = 1; // 2's complement
+				}
+				else {
+					disp = ta - pc;
+					compflag = 0;
+				}
+				
+				if (disp > 0x1000) {
+					b = 1; p = 0;
+					disp = ta - base;
+					compflag = 0;
+				}
+				else {
+					b = 0; p = 1;
+				}
+			}
+			tmpinst->objcode = getObjCode(tmpinst, format, n, i, x, b, p, e, disp, compflag);
+		}
+		tmpinst = tmpinst->next;
+	}
+	//free(normalizemnem);
+	if (finalerror == -1) return -1;
+	return 0;
+}
+
+int getFormat(char *mnem) {
+	char* newm = strtok(mnem, "+");
+	mnemonic* tmpm = hash_table[hashFunc(newm)];
+
+	if (tmpm == NULL) return -1;
+	while(strcmp(newm, tmpm->mnem)) {
+		if (tmpm->next==NULL) return -1;
+		tmpm = tmpm->next;
+	}
+
+	return tmpm->format;
+}
+
+char* itoa(int value, char* result, int base) {
+	char* ptr = result, *ptr1 = result, tmp_char;
+	int tmp_value;
+
+	do {
+		tmp_value = value;
+		value /= base;
+		*ptr++ = "ZYXWVUTSRQPONMLKJIHGFEDCBA9876543210123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[35+(tmp_value - value*base)];
+	} while(value);
+
+	if (tmp_value < 0) *ptr++ = '-';
+	*ptr-- = '\0';
+	while(ptr1<ptr) {
+		tmp_char = *ptr;
+		*ptr--=*ptr1;
+		*ptr1++ = tmp_char;
+	}
+	return result;
+}
+
+/**********
+[function]  read given file and show 	
+[parameter]	none
+[return]	none
+**********/
+int assemble() {
+	FILE *fp;
+	inst *tmpinst;
+	command *tmpC = findLastCommand();
+	mnemonic *tmpm;
+	char *newfile1 = (char*)malloc(sizeof(char)*30);
+	char *newfile2 = (char*)malloc(sizeof(char)*30);
+	char *vars = (char*)malloc(sizeof(char)*30);
+	int size, i, errflag = 0, finalerror = 0;
+
+	/* fill location and object code for each instruction */
+	errflag = makeInstList();
+	if (errflag == -1) return -1;
+
+	errflag = locSet();
+	if (errflag == -1) finalerror = -1;
+
+	errflag = makeSymHash();
+	if (errflag == -1 || finalerror == -1) return -1;
+	
+	errflag = objcodeSet();
+	if (errflag == -1) return -1;
+	
+	/* make lst file */
+	strcpy(newfile1, tmpC->par1);
+	newfile1 = strtok(newfile1, ".");
+	strcat(newfile1, ".lst");
+
+	fp = fopen(newfile1, "w");
+	if (fp == NULL) {
+		printf("failed to open file!!!\n");
+		return -1;
+	}
+
+	tmpinst = instRoot;
+	while(tmpinst != NULL) {
+		fprintf(fp, "%-10d", tmpinst->lineNum);
+		if (tmpinst->loc != -1 && strcmp(tmpinst->mnem, "END")) fprintf(fp, "%04X\t\t", tmpinst->loc);
+		else fprintf(fp, "%4s\t\t", " ");
+		if (tmpinst->symbol[0] != ' ') fprintf(fp, "%-30s", tmpinst->symbol);
+		else fprintf(fp, "%-30s", " ");
+		if (tmpinst->mnem[0] != ' ') fprintf(fp, "%-30s", tmpinst->mnem);
+		else fprintf(fp, "%-30s", " ");
+		if (tmpinst->var1[0] != ' ') {
+			strcpy(vars, tmpinst->var1);
+			if (tmpinst->var2[0] != ' ') {
+				strcat(vars, ", ");
+				strcat(vars, tmpinst->var2);
+			}
+			fprintf(fp, "%-30s", vars);
+		}
+		else fprintf(fp, "%-30s", " ");
+		if (tmpinst->objcode != -1) {
+			if (!strcmp(tmpinst->mnem, "BYTE") || !strcmp(tmpinst->mnem, "WORD")) {
+				if (tmpinst->var1[0] == 'C') {
+					// case when the string length is longer than 4
+					if (checkConstSize(tmpinst->mnem, tmpinst->var1) > 4) {
+						for (i=0;i<strlen(tmpinst->tmpobj);i++)
+							fprintf(fp,"%X",(int)(tmpinst->tmpobj[i]));
+					}
+					// case when the string length is equal to or shorter than 4
+					else fprintf(fp, "%X", tmpinst->objcode);		
+				}
+				else if (tmpinst->var1[0] == 'X') {
+					size =  checkConstSize(tmpinst->mnem, tmpinst->var1); 
+					for (i=0;i<2*size-strlen(dtoh(tmpinst->objcode, 16));i++)	
+						fprintf(fp, "%c", '0');
+					fprintf(fp, "%X", tmpinst->objcode);
+				}
+			}
+			else if (tmpinst->mnem[0] == '+')
+				fprintf(fp, "%08X", tmpinst->objcode);
+			else {
+				tmpm = hash_table[hashFunc(tmpinst->mnem)];
+				while(strcmp(tmpm->mnem, strtok(tmpinst->mnem, "+"))) tmpm = tmpm->next;
+				if (tmpm->format == 1)
+					fprintf(fp, "%02X", tmpinst->objcode);
+				else if (tmpm->format == 2)
+					fprintf(fp, "%04X", tmpinst->objcode);
+				else if (tmpm->format == 3)
+					fprintf(fp, "%06X", tmpinst->objcode);
+			}
+		}
+		fprintf(fp, "\n");
+
+		tmpinst = tmpinst->next;
+	}
+	fclose(fp);
+	free(vars);
+
+	/* make obj file */
+	strcpy(newfile2, tmpC->par1);
+	newfile2 = strtok(newfile2, ".");
+	strcat(newfile2, ".obj");
+
+	fp = fopen(newfile2, "w");
+	if (fp == NULL) {
+		printf("failed to open file!!!\n");
+		return -1;
+	}
+	
+	int len = 0, startflag = 1, enterflag = 0, increase = 0;
+	char objs[300];
+	char buff[30];
+	inst* tmpindex;
+
+	objs[0] = '\0';
+	buff[0] = '\0';
+
+	tmpinst = instRoot;
+	while (strcmp(tmpinst->mnem, "START")) tmpinst = tmpinst->next;
+	fprintf(fp, "H%-6s%06X%06X\n", tmpinst->symbol, startaddr, endaddr-startaddr);	
+	
+	tmpinst = tmpinst->next;
+	while(tmpinst != NULL) {
+		if (!strcmp(tmpinst->mnem, "END")) {
+			fprintf(fp, "%02X%s\n", len/2, objs);
+			for (tmpindex = instRoot; tmpindex!=NULL;tmpindex=tmpindex->next) {
+				itoa(tmpindex->objcode, buff, 16);
+				if (!strncmp(buff, "4B1", 3))
+					fprintf(fp, "M%06X%02X\n", tmpindex->loc + 1, 5);
+			}
+			fprintf(fp, "E%06X\n", startaddr);
+			objs[0] = '\0';
+			break;
+		}
+
+		if (startflag) {
+			fprintf(fp, "T%06X", tmpinst->loc);
+			startflag = 0; 
+		}
+
+		if (!strcmp(tmpinst->mnem, "RESW") || !strcmp(tmpinst->mnem, "RESB")) {
+			enterflag = 1; 
+		}
+		else if (tmpinst->symbol[0] != '.' && strcmp(tmpinst->mnem, "BASE")) {
+			if (!strcmp(tmpinst->mnem, "WORD") || !strcmp(tmpinst->mnem, "BYTE")) {
+				if (tmpinst->var1[0] == 'C') {
+					itoa(tmpinst->objcode, buff, 16);		
+					increase = strlen(buff);
+				}
+				else if (tmpinst->var1[0] == 'X') {
+					increase = 2*checkConstSize(tmpinst->mnem, tmpinst->var1); 
+					itoa(tmpinst->objcode, buff, 16);		
+				}
+			}
+			else {
+				switch(getFormat(tmpinst->mnem)){
+					case 1: break;
+					case 2:
+						increase = 4; break;
+					case 3:
+						increase = 6; break;
+					case 4:
+						increase = 8; break;
+					case -1: break;
+				}
+				if (tmpinst->mnem[0] == '+') increase = 8;
+				itoa(tmpinst->objcode, buff, 16);
+			}
+			if (len + increase <= 30*2 && !enterflag) {
+				len += increase;
+				for(i=0;i<increase-strlen(buff);i++) strcat(objs, "0");
+				strcat(objs, buff); 
+				buff[0] = '\0';
+			}
+			else {
+				// print out objs and len!
+				fprintf(fp, "%02X%s", len/2, objs);
+				fprintf(fp, "\n"); startflag = 1; len = 0; enterflag = 0;
+				objs[0] = '\0'; buff[0] = '\0';
+				tmpinst = tmpinst->prev;	
+			}
+		}
+		tmpinst = tmpinst->next;
+	}
+
+
+	printf("Successfully assemble %s\n", tmpC->par1);
+
+
+	fclose(fp);
+	free(newfile1);
+	free(newfile2);
+	return 0;
+}
+
+/**********
+[function]  read given file and show 	
+[parameter]	none
+[return]	none
+**********/
+int type() {
+	FILE *fp;
+	char readC;
+	command *commandptr = findLastCommand();
+	
+	fp = fopen(commandptr->par1, "r");
+	/* error when filename does not exist */	
+	if (fp == NULL) {
+		printf("file does not exeist!!!\n");
+		return -1;
+	}
+	while(1) {
+		readC = fgetc(fp);
+		if (readC == EOF) break;
+		else printf("%c", readC);
+	} 
+	
+
+	fclose(fp);
+	return 0;	
+}
+
+
+/**********
+[function]  read given file and show 	
+[parameter]	none
+[return]	none
+**********/
+int symbol() {
+	sym *tmps, *index1, *min;
+	int i, nullcount = 0, count, n;
+
+	for (i=0;i<26;i++) {
+		tmps = symbol_hash[i];
+		if (tmps == NULL) {
+			nullcount++; 
+			if (nullcount >= 26) {
+				printf("symbol hash table not made yet!!!\n");
+				return -1;
+			}
+			continue;
+		}
+		count = 0; n = 0;
+		while (tmps!=NULL) {
+			n++;
+			tmps = tmps->next;
+		}
+		while (count<n) {
+			min = NULL; tmps = symbol_hash[i];
+			for(index1=tmps;index1!=NULL;index1=index1->next) {
+				if (min == NULL) {
+					while(tmps->visit == 1) tmps = tmps->next;
+					min = tmps;
+				}
+				if (strcmp(min->symbol, index1->symbol) > 0 && index1->visit == 0) min = index1;
+			}
+			printf("%s\t%04X\n", min->symbol, min->loc);
+			min->visit = 1; count++;
+		}
+	}
+
+	for (i=0;i<26;i++) {
+		tmps = symbol_hash[i];
+		while(tmps!=NULL) {
+			tmps->visit = 0;
+			tmps = tmps->next;
+		}
+	}
+
+	return 0;
+}
+
+
 /* MAIN FUNCTION */
 int main() {
 	int flag = 0, errflag;
@@ -864,6 +1694,20 @@ int main() {
 			case 10:
 				addCommand(code);
 				opcodelist();
+				break;
+			case 11:
+				addCommand(code);
+				errflag = assemble();
+				if (errflag == -1) delLastCommand();
+				break;
+			case 12:
+				addCommand(code);
+				errflag = type();
+				if (errflag == -1) delLastCommand();
+				break;
+			case 13:
+				addCommand(code);
+				symbol();
 				break;
 			case 0:
 				// error
