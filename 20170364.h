@@ -2,13 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <math.h>
 
 /* Macros */
-#define MAX_COMMAND 20
+#define MAX_COMMAND 40
 #define MAX_MNEMONIC 10
 #define MEMORY_ROW 65536
 #define MEMORY_COL 16
@@ -16,6 +15,11 @@
 #define MAX_MEMORY 1048575
 #define HASH_LENTH 20
 #define MAX_LINE 100
+#define MAXCSNUM 3
+#define MAXCSNAMELEN 6
+#define RIGHTISBIG 1
+#define LEFTISBIG -1
+#define EQUAL 0
 
 /* Global Variables */
 char *code = NULL;
@@ -25,6 +29,17 @@ int lastAddr = 0;			// address accessed most recently
 const char *FILENAME = "opcode.txt";
 int startaddr;
 int endaddr;
+char fplist[MAXCSNUM][30];
+int bplist[MAX_LINE];
+int bpnum = 0;
+int reglist[8] = {0,};
+
+int progaddr = 0x00;
+int proglen = 0x00;
+int csaddr = 0x00;
+int execaddr = 0x00;
+int pc = 0x00;
+
 
 typedef struct _command {
 	char comm[MAX_COMMAND];
@@ -69,6 +84,28 @@ typedef struct _sym {
 } sym;
 sym *symbol_hash[26];
 
+typedef struct _extsymNode {
+	char sym[7];
+	int loc;
+	struct _extsymNode *next;
+	struct _extsymNode *prev;
+} extsymNode;
+
+typedef struct _extsym {
+	char csname[7];
+	int addr;
+	int len;
+	int totalnum;
+	extsymNode* symlist;
+} extsym;
+extsym estab[MAXCSNUM];
+
+typedef struct _refnum {
+	char num[3];
+	char sym[7];
+} refnum;
+refnum reftab[10];
+
 
 /* Functions */
 char *changemode(char *code);
@@ -88,6 +125,7 @@ int checkValErr(int value);
 int hashFunc(char *mnemonic);
 int readFile();
 int makeHashTable(mnemonic *newM, int hashkey);
+void strip(char* c);
 
 int initInst(inst *newInst);
 int makeInstList();
@@ -103,7 +141,11 @@ int getObjCode(inst *tmpinst, int format, int n, int i, int x, int b, int p, int
 int objcodeSet(); //pass2
 int getFormat(char *mnem);
 char *itoa(int value, char* result, int base);
-
+int pass1(int inputnum);
+int pass2(int inputnum);
+int printLoadmap(int inputnum);
+void print_reg();
+void st_mem(int ta, int reg);
 
 void help();
 int dir();
@@ -118,4 +160,7 @@ int opcodelist();
 int assemble();
 int type();
 int symbol();
-
+int programaddr();
+int loader();
+int createBp();
+int run();

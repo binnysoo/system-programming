@@ -7,7 +7,7 @@
 **********/
 char* changemode(char *code) {
 	int i, index = 0;
-
+  
 	while (code[index] == ' ') index++;		// is blank from 0 to index - 1 		
 	if (index != 0) {
 		for (i=0;i<strlen(code)-index;i++) 
@@ -68,6 +68,10 @@ int  mode(){
 	else if (!(strcmp(code_ptr, "assemble"))) return 11;
 	else if (!(strcmp(code_ptr, "type"))) return 12;
 	else if (!(strcmp(code_ptr, "symbol"))) return 13;
+	else if (!(strcmp(code_ptr, "progaddr"))) return 14;
+	else if (!(strcmp(code_ptr, "loader"))) return 15;
+	else if (!(strcmp(code_ptr, "bp"))) return 16;
+	else if (!(strcmp(code_ptr, "run"))) return 17;
 	else return 0;
 }
 
@@ -197,50 +201,13 @@ int freeLinkedList() {
 [return]	none
 **********/
 void help(){ 
-	printf("h[elp]\nd[ir]\nq[uit]\nhi[story]\ndu[mp] [start, end]\ne[dit] address, value\nf[ill] start, end, value\nreset\nopcode mnemonic\nopcodelist\nassemble filename\ntype filename\nsymbol\n");
+	printf("h[elp]\nd[ir]\nq[uit]\nhi[story]\ndu[mp] [start, end]\ne[dit] address, value\nf[ill] start, end, value\nreset\nopcode mnemonic\nopcodelist\nassemble filename\ntype filename\nsymbol\nprogaddr [address]\nloader [object filename1] [object filename2] [..]\nbp [address]\nrun\n");
 	
 	return;
 }
 
 
-/**********
-[function]	print out fils and folders in current directory
-[parameter] none	
-[return]	none
-**********/
-int dir() {
-	DIR *dir_info;
-	struct dirent *dir_entry;
-	struct stat dir_status;
-	
-	dir_info = opendir("."); // open curent directory
 
-	if (!dir_info) {
-		printf("failed to open directory!!!\n");
-		return -1;
-	}
-	else {
-		while((dir_entry = readdir(dir_info))) {
-			lstat(dir_entry->d_name, &dir_status);
-			/* if directory, put '/' at the end of the directory name */
-			if (dir_entry->d_type == DT_DIR) {
-				printf("%s/\n", dir_entry->d_name);
-			}
-			/* if executable file (X.out), put '*' at the end of the file name */
-			else if ((dir_entry->d_type == DT_REG) && (S_IEXEC & dir_status.st_mode)) {
-				printf("%s*\n", dir_entry->d_name);
-			}
-			/* else, put nothing but the file name */
-			else {
-				printf("%s\n", dir_entry->d_name);
-			}
-		}
-	}
-	
-	closedir(dir_info);
-
-	return 0;
-}
 
 /**********
 [function]	quit sicsim	
@@ -315,7 +282,7 @@ int htod(char* hex) {
 	int decimal = 0;
 	int len = strlen(hex);
 	int i;
-	char tmpC;
+	char tmpC[1];
 	int tmpd = 0;
 	
 	/* when hexadecimal address is negative number */
@@ -332,8 +299,8 @@ int htod(char* hex) {
 	}
 
 	for (i=len-1;i>=0;i--) {
-		tmpC = hex[i];
-		switch(tmpC) {
+		tmpC[0] = hex[i];
+		switch(tmpC[0]) {
 			case '0': 
 			case '1':	
 			case '2':	
@@ -344,7 +311,8 @@ int htod(char* hex) {
 			case '7':
 			case '8': 
 			case '9':	
-				tmpd = atoi(&tmpC); break;
+				tmpd = atoi(tmpC); 
+				break;
 			case 'a': 
 			case 'A':
 				tmpd = 10; break;
@@ -367,7 +335,7 @@ int htod(char* hex) {
 		}
 		decimal += tmpd * power(16, len-i-1);
 	}
-
+	
 	return decimal;
 }
 
@@ -574,13 +542,15 @@ int edit(){
 [return]	none
 **********/
 int reset() {
-	int i; 
+	int i, j; 
 	if (lastAddr == -1) {
 		printf("No memory stored!!!");
 		return -1;
 	}
-	for (i=0;i<=lastAddr;i++) {
-		memory[i/16][i%16] = 0;
+	for (i=0;i<MEMORY_ROW;i++) {
+		for (j=0;j<MEMORY_COL;j++){
+			memory[i][j] = 0;
+		}
 	}
 	return 0;
 }
@@ -1640,6 +1610,708 @@ int symbol() {
 	return 0;
 }
 
+/* delete blank */
+void strip(char* c) {
+	int i;
+	for (i=0;i<strlen(c);i++) {
+		if (c[i] == ' ' || c[i] == '\n') {
+			c[i] = '\0';
+			break;
+		}
+		else if ((i == strlen(c)-1) && c[i] != '\0')
+			strcat(c, "\0");
+	}
+	return;
+}
+
+int programaddr() {
+	command *commandptr = findLastCommand();
+	/* set value for global variable progaddress */
+	progaddr = htod(commandptr->par1);
+
+	if (progaddr > 0xFFFFF || progaddr < 0) {
+		printf("start address out of range!!!\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+int pass1(int inputnum) {
+	FILE *fp;
+	int i, j, cslth = 0, extsymnum, relstartaddr;
+	char line[255], Dbuff[50], CSNAME[10];
+	extsymNode *extlist = NULL, *prevextN, *tmpextN;
+	
+	/* init extsym_tb */
+	for (i=0;i<inputnum;i++) {
+		estab[i].csname[0] = '\0';
+		estab[i].addr = estab[i].len = estab[i].totalnum = 0;
+		estab[i].symlist = NULL;
+	}
+
+	/* get PROGADDR from os */
+	/* set CSADDR to PROGADDR {for first control section} */
+	csaddr = progaddr;
+
+	for (i=0;i<inputnum;i++) {
+		extsymnum = 0;
+		/* read next input record {Header record for control section} */
+		fp = fopen(fplist[i], "r");
+		if (fp == NULL) {
+			printf("failed to open %s!!!\n", fplist[i]);
+			return -1;
+		}
+		
+		/* while not end of input do */
+		while(fgets(line, sizeof(line), fp) != NULL) {
+			/* comment */
+			if (line[0] == '.') continue;
+			
+			/* Header Record */
+			else if (line[0] == 'H') {
+				/* get control section name */
+				strncpy(CSNAME, &line[1], MAXCSNAMELEN);
+				strip(CSNAME);
+				/* set CSLTH to control section length */
+				sscanf(&line[13], "%X", &cslth);
+				line[13] = '\0';
+				/* set CSADDR to control section start address */
+				sscanf(&line[7], "%X", &relstartaddr);
+				csaddr += relstartaddr;
+			} // end of: if (line[0] == 'H')
+
+			/* Define Record */
+			else if (line[0] == 'D') {
+				extlist = (extsymNode*)malloc(sizeof(extsymNode));
+				extlist->sym[0] = '\0';
+				extlist->loc = 0;
+				extlist->prev = extlist->next = NULL;
+				tmpextN = extlist;
+				
+				/* make extlist */
+				j = 1;
+				while(1) {
+					if (j+12 >= strlen(line)) break;
+					/* get symbol name and location */
+					strncpy(Dbuff, &line[j], 12);
+					Dbuff[12] = '\0';
+
+					if (extsymnum != 0) {
+						tmpextN = (extsymNode*)malloc(sizeof(extsymNode));
+						tmpextN->sym[0] = '\0';
+						tmpextN->loc = 0;
+						tmpextN->prev = tmpextN->next = NULL;
+					}
+					/* get location of symbol (Dbuff[6:11]) */
+					sscanf(&Dbuff[6], "%X", &tmpextN->loc);
+					/* add the starting address of the control section */
+					tmpextN->loc += csaddr;
+					Dbuff[6] = '\0';	
+					/* get symbol name (Dbuff[0:5]) */
+					sscanf(&Dbuff[0], "%s", tmpextN->sym);
+					strip(tmpextN->sym);
+
+					/* duplicate error check */
+					extsymNode *x;
+					for (x=extlist; x!=NULL; x=x->next) {
+						if (extsymnum == 0) break;
+						if (!strcmp(x->sym, tmpextN->sym)) {
+							printf("same external symbol already exists!!!\n");
+							return -1;
+						}		
+					}		
+
+					/* link nodes */
+					if (extsymnum != 0) {
+						prevextN->next = tmpextN;
+						tmpextN->prev = prevextN;
+					}
+					prevextN = tmpextN;
+					
+					extsymnum++;
+					j += 12;
+				} // end of: while(1)
+				
+			} // end of: if (line[0] == 'D')
+
+		} // end of while
+
+
+
+		/* search ESTAR for control section name -> search ESTAB */
+		for (j=0;j<inputnum;j++) {
+			/* if found then */
+			if (!strcmp(estab[j].csname, CSNAME)) {
+				/* set error flag {duplicate external symbol} */
+				printf("same control section name already exists!!!\n");
+				return -1;
+			}
+		}
+		/* enter control section name into ESTAB with value CSADDR */
+		sscanf(CSNAME, "%s", estab[i].csname);
+		//strcpy(estab[i].csname, CSNAME);
+		estab[i].addr = csaddr;
+		estab[i].len = cslth;
+		estab[i].totalnum = extsymnum;
+		estab[i].symlist = extlist;
+		
+		/* add CSLTH to CSADDR {starting address for next control section} */
+		csaddr += cslth;
+	} // end of for loop 
+	
+	
+
+	return 0;
+}
+
+int pass2(int inputnum) {
+	FILE *fp;
+	int i, j, cslth;
+	char line[255] = "\0";
+
+	/* set CSADDR to PROGADDR */
+	csaddr = progaddr;
+	/* set EXECADDR to PROGADDR */
+	execaddr = progaddr;
+
+	/* while not end of input do */
+	for (i=0;i<inputnum;i++) {
+		/* read next input record {Header record} */
+		fp = fopen(fplist[i], "r");
+		if (fp == NULL) {
+			printf("failed to %s!!!\n", fplist[i]);
+			return -1;
+		}
+		/* set CSLTH to control section length */
+		cslth = estab[i].len;
+		
+		/* while record type != 'E' do */
+		while(fgets(line, sizeof(line), fp) != NULL && line[0] != 'E') {
+			/* comment */
+			if (line[0] == '.') continue;
+			
+			/* if record type = 'T' then */
+			else if (line[0] == 'T') {
+				/* if objcode is in character form, convert into internal representation */
+				char Taddr_char[7] = "      \0"; int Taddr;
+				strncpy(Taddr_char, &line[1], 6);	
+				Taddr_char[6] = '\0';
+				//printf("Taddr: %s  ", Taddr_char);
+				/* (CSADDR + specified address) */
+				Taddr = htod(Taddr_char) + csaddr;
+				
+				//printf("Taddr = %d\n", Taddr);
+
+				char Tlen_char[3]; int Tlen;
+				strncpy(Tlen_char, &line[7], 2);
+				Tlen_char[2] = '\0';
+				Tlen = htod(Tlen_char);
+
+				/* move object code from record to location */
+				char Tvalue_char[3]; int Tvalue;
+				for(j=0;j<Tlen;j++) {
+					strncpy(Tvalue_char, &line[9] + 2*j, 2);
+					Tvalue_char[2] = '\0';
+					Tvalue = htod(Tvalue_char);
+					//printf("memory[%d][%d] will change\n", (Taddr+j)/MEMORY_COL, (Taddr+j)%MEMORY_COL);
+					memory[(Taddr+j)/MEMORY_COL][(Taddr+j)%MEMORY_COL] = Tvalue;
+				}
+			} // end of: if (line[0] == 'T')
+
+			else if (line[0] == 'R') {
+				/* save reference number to reftab */
+				for (j = 1; j<strlen(line); j += 8) {
+					strncpy(reftab[j/8].num, &line[j], 2);
+					strcat(reftab[j/8].num, "\0");
+					strncpy(reftab[j/8].sym, &line[j+2], 6);
+					strcat(reftab[j/8].sym, "\0");
+				} // end of: while (j = 1; j+8<=strlen(line); j += 8)
+			} // end of: if (line[0] == 'R')
+			
+			/* else if record type = 'M' then */
+			else if (line[0] == 'M') {
+				char modflag, modbuff[10], Maddr_char[7], Mlen_char[3]; 
+				char modref[3], modsym[7];
+				int Maddr, Mlen;
+				strncpy(Maddr_char, &line[1], 6);
+				Maddr_char[6] = '\0';
+				Maddr = htod(Maddr_char);
+
+				strncpy(Mlen_char, &line[7], 2);
+				Mlen_char[2] = '\0';
+				Mlen = htod(Mlen_char);
+
+				modflag = line[9];
+
+				strncpy(modbuff, &line[10], 2);
+				modbuff[2] = '\0';
+				sscanf(modbuff, "%s", modref);
+				strip(modref);
+				//strcat(modref, "\0");
+				for(j=0;j<10;j++) modbuff[j] = '\0';
+
+				/* find symbol for reference number */
+				for (j=0;j<10;j++) {
+					if (!strcmp("01", modref)) break;
+					else if (!strcmp(reftab[j].num, modref)) {
+						strcpy(modbuff, reftab[j].sym);
+						sscanf(modbuff, "%s", modsym);
+						strip(modsym);
+						//strcat(modsym, "\0");
+						break;
+					}
+					/* error case for undefined reference number */
+					else if (j == 9) {
+						printf("undefined reference number: %s !!!\n", modref);
+						return -1;
+					}
+				}
+
+				/* search ESTAB for modifying symbol name */
+				int refsymloc = -1;
+				for (j=0;j<inputnum;j++) {
+					for (extsymNode *tmpsym = estab[j].symlist; tmpsym != NULL; tmpsym = tmpsym->next) {
+						/* reference number 01 */
+						if (!strcmp("01", modref)) {
+							refsymloc = csaddr;
+							break;
+						}
+
+						/* do not search current control section */
+						if (j == i) continue;
+						
+						if (!strcmp(tmpsym->sym, modsym)) {
+							refsymloc = tmpsym->loc; 
+							j = inputnum; break;
+						}
+					}
+				} // end of: for (j=0;j<MAXCSNUM;j++);
+				/* if not found then */
+				if (refsymloc == -1) {
+					/* set error flag (undefined external symbol) */
+					printf("undefined external symbol: %s !!!\n", modsym);
+					return -1;
+				}
+				/* else */
+				else {
+					/* add or subtract symbol value at location */
+					/* (CSADDR + specified address) */
+					Maddr += csaddr;
+					int currvalue = 0;
+					if (Mlen == 6) {
+						currvalue += memory[Maddr/16][Maddr%16] * power(16, 4);
+					} // end of: if (Mlen == 6)
+					else if (Mlen == 5) {
+						currvalue += (memory[Maddr/16][Maddr%16] % 16) * power(16, 4);
+					} // end of: else if (Mlen == 5) 
+					currvalue += memory[(Maddr+1)/16][(Maddr + 1)%16] * power(16, 2);
+					currvalue += memory[(Maddr+2)/16][(Maddr + 2)%16] * power(16, 0);
+
+					if (modflag == '-') {
+						currvalue -= refsymloc;						
+					}
+					else if (modflag == '+') {
+						currvalue += refsymloc;
+					}
+					else {
+						printf("wrong modification flag!!!\n");
+						return -1;
+					}
+					
+					/* modification */
+					if (Mlen == 5) {
+						memory[Maddr/16][Maddr%16] += (currvalue % power(16, 5)) / power(16,4);
+					}
+					else if (Mlen == 6) {
+						memory[Maddr/16][Maddr%16] = currvalue / power(16, 4);
+						memory[(Maddr+1)/16][(Maddr+1)%16] = (currvalue % power(16, 4)) / power(16, 2);
+						memory[(Maddr+2)/16][(Maddr+2)%16] = currvalue % power(16, 2);
+					}
+					memory[(Maddr+1)/16][(Maddr+1)%16] = (currvalue % power(16, 4)) / power(16, 2);
+					memory[(Maddr+2)/16][(Maddr+2)%16] = currvalue % power(16, 2);
+				} // end of: else
+			} // end of: else if (line[0] == 'M')
+		} // end of: while(line[0] != 'E') 
+
+		/* if an address is specified {in End record} then */
+		if (strlen(line) > 1 && line[0] == 'E') {
+			char Eaddr_char[7]; int Eaddr;
+			strncpy(Eaddr_char, &line[1], 6);
+			Eaddr_char[6] = '\0';
+			Eaddr = htod(Eaddr_char);
+			/* set EXECADDR to (CSADDR + specified address) */
+			execaddr = Eaddr + csaddr;
+			//execaddr = Eaddr + estab[i].addr;
+		}
+		// else: execaddr = progaddr;
+
+		/* add CSLTH to CSADDR */
+		csaddr += cslth;
+	
+		/* jump to location given by EXECADDR {to start execution of loaded program} */
+		pc = execaddr;
+	
+	} // end of: for (i=0;i<MAXCSNUM;i++) 
+
+	return 0;
+}
+
+int printLoadmap(int inputnum) {
+	int i, len = 0;
+	printf("control\tsymbol\taddress\tlength\n");
+	printf("section\tname\n");
+	printf("--------------------------------\n");
+	for (i=0;i<inputnum;i++) {
+		printf("%s\t\t%04X\t%04X\n", estab[i].csname, estab[i].addr, estab[i].len);
+		for (extsymNode *x = estab[i].symlist; x != NULL; x = x->next) {
+			printf("\t%5s\t%04X\n", x->sym, x->loc);
+		}
+		len += estab[i].len;
+	}
+	printf("--------------------------------\n");
+	printf("\ttotal length %04X\n", len);
+
+	proglen = len;	
+
+	/* initialize PC */
+	reglist[6] = estab[0].addr;
+	/* initialize register  L */
+	reglist[2] = proglen;
+
+	return 0;
+}
+
+int loader() {
+	command *cmdptr = findLastCommand();
+	int inputnum = 0;
+
+	if (cmdptr->par1 != NULL) {
+		strcpy(fplist[0], cmdptr->par1);
+		inputnum++;	
+	}
+	if (cmdptr->par2 != NULL) {
+		strcpy(fplist[1], cmdptr->par2);
+		inputnum++;	
+	}
+	if (cmdptr->par3 != NULL) {
+		strcpy(fplist[2], cmdptr->par3);
+		inputnum++;	
+	}
+
+	pass1(inputnum);
+	pass2(inputnum);
+	printLoadmap(inputnum);
+
+	/* initialize bplist */
+	for (int i=0;i<MAX_LINE;i++) bplist[i] = -1;
+	bpnum = 0;
+
+
+	return 0;
+}
+
+int createBp() {
+	command *cmdptr = findLastCommand();
+	int i = 0, bp;
+
+	/* print out all breakpoints */
+	if (cmdptr->par1 == NULL) {
+		printf("\t\tbreakpoint\n");
+		printf("\t\t----------\n");
+		while(bplist[i] != -1) {
+			printf("\t\t%X\n", bplist[i++]);
+		}
+	}
+	else if (!strcmp("clear", cmdptr->par1)) {
+		for (i=0;i<MAX_LINE;i++) bplist[i] = -1;
+		bpnum = 0;
+		printf("\t\t[ok] clear all breakpoints\n");
+	}
+	else {
+		bp = htod(cmdptr->par1);
+		if (bp < 0x00000 || bp > proglen) {
+			printf("\t\t[error] breakpoint out of range!!!\n");
+			return -1;
+		}
+
+		/* add bp to bplist */
+		bplist[bpnum++] = bp;
+		printf("\t\t[ok] create breakpoint %s\n", cmdptr->par1);
+	}
+
+	return 0;
+}
+
+void print_reg() {
+	printf("A : %06X\t X : %06X\n", reglist[0], reglist[1]);
+	printf("L : %06X\tPC : %06X\n", reglist[2], reglist[6]);
+	printf("B : %06X\t S : %06X\n", reglist[3], reglist[4]);
+	printf("T : %06X\t\n", reglist[5]);
+	return;
+}
+void st_mem(int ta, int reg) {
+	
+	memory[ta/16][ta%16] = reglist[reg] / power(16,4);
+	memory[(ta+1)/16][(ta+1)%16] = (reglist[reg] % power(16, 4)) / power(16, 2);
+	memory[(ta+2)/16][(ta+2)%16] = reglist[reg] % power(16,2);
+
+	return;
+}
+
+int run() {
+	int n, i, x, b, p, e, opcode, format, ta, pc, r1, r2;
+	int breakflag = 0, endflag = 0, jumpflag;
+	int j;
+
+	/* copy.obj always starts from 0x0000 */
+	progaddr = 0x0000;
+
+	/* program counter points to execaddr */
+	pc = execaddr; 
+
+	/* run program */
+	while(endflag != 1 && breakflag != 1 ) {
+		/* if bp */
+		for (j=0;j<bpnum;j++) {
+			if (bplist[j] == -1) continue;
+			if (bplist[j] == pc) {
+				bplist[j] = -1; 
+				execaddr = pc;
+				breakflag = 1;
+				break;
+			}
+		} if (breakflag == 1) break;
+
+		/* get nixbpe */
+		int ni, xbpe;
+		ni = (memory[pc/16][pc%16] % 16) % 4;
+		xbpe = memory[(pc+1)/16][(pc+1)%16]/16;
+
+		n = ni / 2;
+		i = ni % 2;
+		x = xbpe / 8;
+		b = (xbpe % 8) / 4;
+		p = (xbpe % 4) / 2;
+		e = xbpe % 2;
+
+		/* get opcode */
+		opcode = memory[pc/16][pc%16] - n*2 - i*1;
+
+		mnemonic *tmpm;
+		format = -1;
+		for (j=0;j<20;j++) {
+			tmpm = hash_table[j];
+			while(tmpm != NULL) {
+				if (tmpm->opcode == opcode) {
+					format = tmpm->format;
+					break;
+				}
+				else tmpm = tmpm->next;
+			}
+			if (format != -1) break;
+		}
+		if (format == -1) {
+			printf("something went wrong !!! \n");
+			return -1;
+		}
+		
+		if (e == 1 && (n != 0 || i != 0)) format = 4;
+		
+		// reglist[0] = A, [1] = X, [2] = L, [3] = B, [4] = S, [5] = T, [6] = PC, [7] = CC
+
+		/* for each format */
+		ta = 0;
+		switch(format) {
+			case 1:
+				break;
+			case 2:
+				r1 = memory[(pc+1)/16][(pc+1)%16] / 16;
+				r2 = memory[(pc+1)/16][(pc+1)%16] % 16;
+				reglist[6] += 2;
+				pc += 2;
+				if (opcode == 0xB4) {
+					// CLEAR
+					reglist[r1] = 0;
+				}
+				else if (opcode == 0xB8) {
+					// TIXR
+					reglist[1]++;
+					if (reglist[1] > reglist[r1]) reglist[7] = LEFTISBIG;
+					else if (reglist[1] < reglist[r1]) reglist[7] = RIGHTISBIG;
+					else reglist[7] = EQUAL;
+				}	
+				else if (opcode == 0xA0) {
+					// COMPR
+					if (reglist[r1] < reglist[r2]) reglist[7] = RIGHTISBIG;
+					else if (reglist[r1] > reglist[r2]) reglist[7] = LEFTISBIG;
+					else reglist[7] = EQUAL;
+				}
+				break;
+			case 3:
+				reglist[6] += 3;
+				/* get 12 bits displacement */
+				ta += (memory[(pc+1)/16][(pc+1)%16] % 16) * power(16, 2);
+				ta += memory[(pc+2)/16][(pc+2)%16];
+
+				/* add b or p */
+				if (b == 1 && p == 0) {
+					/* base relative */	
+					ta += reglist[3];
+				}
+				else if (b == 0 && p == 1) {
+					/* pc relative */
+					ta += reglist[6];
+				}
+				/* check X */
+				if (x == 1)
+					ta += reglist[1];
+				pc += 3;				
+				
+				/* ta out of range -> case when displacement was meant to be negative */
+				if (ta > proglen) {
+					ta = ta - 0x1000;
+				}
+				break;
+			case 4:
+				reglist[6] += 4;
+				/* 20 bits represents absolute target address */
+				ta += (memory[(pc+1)/16][(pc+1)%16] % 16) * power(16, 4);
+				ta += memory[(pc+2)/16][(pc+2)%16] * power(16, 2);
+				ta += memory[(pc+3)/16][(pc+3)%16];
+				pc += 4;
+				break;
+				
+		} // end of switch(format)
+		
+		/* mnemonics that can be used both as format 3 and 4 */
+		jumpflag = 0; 
+		if (format == 3 || format == 4) {
+			switch(opcode) {
+				case 0x14:
+					// STL
+					st_mem(ta, 2);
+					break;
+				case 0x68:
+					// LDB
+					reglist[3] = ta;
+					break;
+				case 0x48:
+					// JSUB
+					reglist[2] = reglist[6];
+					reglist[6] = ta;
+					jumpflag = 1;
+					break;
+				case 0x00:
+					// LDA
+					if (n == 1 && i == 1) {
+						// simple addressing
+						reglist[0] = memory[(ta+2)/16][(ta+2)%16] + memory[(ta+1)/16][(ta+1)%16] * power(16, 2) + memory[ta/16][ta%16] * power(16, 4);
+					}
+					else if (n == 0 && i == 1) {
+						// immediate addressing
+						reglist[0] = ta;
+					}
+					break;
+				case 0x28:
+					// COMP
+					if (reglist[0] > ta) reglist[7] = LEFTISBIG;
+					else if (reglist[0] < ta) reglist[7] = RIGHTISBIG;
+					else reglist[7] = EQUAL;
+					break;
+				case 0x30:
+					// JEQ
+					if (reglist[7] == EQUAL) {
+						reglist[6] = ta;
+						jumpflag = 1;
+					}
+					break;
+				case 0x74:
+					// LDT
+					if (n == 1 && i == 1) {
+						// simple addressing
+						reglist[5] = memory[(ta+2)/16][(ta+2)%16] + memory[(ta+1)/16][(ta+1)%16] * power(16, 2) + memory[ta/16][ta%16] * power(16, 4);
+					}
+					else if (n == 0 && i == 1) {
+						// immediate addressing
+						reglist[5] = ta;
+					}
+					break;
+				case 0xE0:
+					// TD
+					reglist[7] = RIGHTISBIG;
+					break;
+				case 0xD8:
+					// RD
+					reglist[0] = 0;
+					break;
+				case 0x54:
+					// STCH
+					memory[ta/16][ta%16] = reglist[0] % power(16, 2);
+					break;
+				case 0x38:
+					// JLT
+					if (reglist[7] == RIGHTISBIG) {
+						reglist[6] = ta;
+						pc = reglist[6];
+						continue;
+					}
+					break;
+				case 0x10:
+					// STX
+					st_mem(ta, 1);
+					break;
+				case 0x4C:
+					// RSUB
+					reglist[6] = reglist[2];
+					jumpflag = 1;
+					break;
+				case 0x0C:
+					// STA
+					st_mem(ta, 0);
+					break;
+				case 0x3C:
+					// J
+					if (n == 1 && i == 1) {
+						// simple addressing 
+						reglist[6] = memory[(ta+2)/16][(ta+2)%16] + memory[(ta+1)/16][(ta+1)%16] * power(16, 2) + memory[ta/16][ta%16] * power(16, 4);
+					}
+					else if (n == 1 && i == 0) {
+						// indirect addressing
+						reglist[6] = memory[ta/16][ta%16];
+					}
+					jumpflag = 1;
+					break;
+				case 0x50:
+					// LDCH
+					reglist[0] -= (reglist[0] % power(16, 2));
+					reglist[0] += memory[ta/16][ta%16];
+					break;
+			} // end of: switch(opcode)
+		} // end of: if (format == 3 || format == 4) 
+
+		
+		/* JUMP */
+		if (jumpflag == 1)	pc = reglist[6];
+
+		/* check end */
+		if (reglist[6] == 0) {
+			endflag = 1;
+			reglist[6] = progaddr + proglen;
+		}
+
+	} // end of while(1)
+
+
+	/* print out registers */
+	print_reg();
+	if (breakflag == 1) 
+		printf("\t\tStop at checkpoint[%X]\n", pc);
+	else if (endflag == 1)
+		printf("\t\tEnd Program\n");
+
+	return 0;
+}
 
 /* MAIN FUNCTION */
 int main() {
@@ -1656,7 +2328,7 @@ int main() {
 				break;
 			case 2:
 				addCommand(code);
-				dir();
+				//dir();
 				break;
 			case 3:
 				addCommand(code);
@@ -1708,6 +2380,26 @@ int main() {
 			case 13:
 				addCommand(code);
 				symbol();
+				break;
+			case 14:
+				addCommand(code);
+				errflag = programaddr();
+				if (errflag == -1) delLastCommand();
+				break;
+			case 15:
+				addCommand(code);
+				errflag = loader();
+				if (errflag == -1) delLastCommand();
+				break;
+			case 16:
+				addCommand(code);
+				errflag = createBp();
+				if (errflag == -1) delLastCommand();
+				break;
+			case 17:
+				addCommand(code);
+				errflag = run();
+				if (errflag == -1) delLastCommand();
 				break;
 			case 0:
 				// error

@@ -1,0 +1,27 @@
+*****************************************
+                 README               
+*****************************************
+
+[2020 Spring System Programming] Project3
+
+# Necessary Files to Compile:
+  - 20170364.c
+  - 20170364.h
+  - opcode.txt
+  - proga.obj
+  - progb.obj
+  - progc.obj
+  - copy.obj
+  - Makefile
+
+# How to Compile:
+	type "make"
+	ex) ~/sp20170364_proj3/make 
+	
+# How to Execute:
+	type "./20170364.out"
+	ex) ~/sp20170364_proj3/./20170364.out
+
+*****************************************
+                 README               
+*****************************************
